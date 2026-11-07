@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""
+memo — 工作区注意力本本（single source of truth = index.json）
+
+数据目录   : MEMO_DIR (默认 $CWD/memo)
+索引表     : MEMO_DIR/index.json
+条目文件   : MEMO_DIR/{NNN}-{描述}.md   (NNN 为当前排序序号)
+
+次命令:
+  memo insert --desc STR [--importance 0.00-1.00] [--agent ID] [--note STR]
+  memo update --id ID [--desc STR] [--importance FLOAT] [--agent ID]
+  memo drop  --id ID
+  memo view  [--scope workplace|agent] [--agent ID] [--top N] [--all]
+  memo renum (重排并重命名所有文件，通常在 insert/update 后自动执行)
+
+设计要点:
+- 序号是派生值，由索引表在每次 insert/update/drop 后重排并回写文件名。
+- 重要性初值默认由调用方(模型)给出; 用户强调则按用户。
+- 冲突(同一事实两条不同取值)必须消解, 不并缓存。
+- 谁读谁现场算 top N,输出量恒定可控。
+"""
+import argparse, json, os, re, sys, datetime
+
+os.chdir(os.path.dirname(os.path.abspath(__file__)) + "/..")
+MEMO_DIR = os.getenv("MEMO_DIR", os.path.abspath("memo"))
+INDEX = os.path.join(MEMO_DIR, "index.json")
+
+def load():
+    with open(INDEX, "r", encoding="utf-8-sig") as f:
+        return json.load(f)
+
+def save(data):
+    os.makedirs(MEMO_DIR, exist_ok=True)
+    with open(INDEX, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def clean_desc(s):
+    s = re.sub(r"[\\/:*?\"<>|\s]+", "-", s.strip())
+    return s[:12] or "untitled"
+
+def fname(seq, desc):
+    return f"{seq:03d}-{clean_desc(desc)}.md"
+
+def renum(data):
+    """按 (importance DESC, created DESC) 排序,重写序号,并重命名文件."""
+    order = sorted(data["notes"], key=lambda n: -n.get("importance", 0))
+    old = {}
+    for n in data["notes"]:
+        old[n["id"]] = n["_file"]
+    renamed = []
+    for i, n in enumerate(order):
+        newseq = i + 1
+        nf = fname(newseq, n["desc"])
+        oldf = os.path.join(MEMO_DIR, n.get("_file", "")) if n.get("_file") else ""
+        nfpath = os.path.join(MEMO_DIR, nf)
+        if oldf and os.path.exists(oldf) and oldf != nfpath:
+            os.rename(oldf, nfpath)
+            renamed.append((os.path.basename(oldf), nf))
+        else:
+            open(nfpath, "w", encoding="utf-8").write("")
+        n["_file"] = nf
+        n["seq"] = newseq
+    save(data)
+    return order, renamed
+
+def insert(args):
+    data = load()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    new_id = args.id or (f"n{int(datetime.datetime.now().timestamp()*1000)}")
+    note = {
+        "id": new_id, "desc": args.desc, "importance": args.importance,
+        "agent": args.agent, "created": now, "updated": now,
+        "note": args.note or "", "_file": ""
+    }
+    data["notes"].append(note)
+    order, renamed = renum(data)
+    print(f"inserted {new_id}: {fname(len(order), args.desc)} (importance={args.importance})")
+    if renamed:
+        for a, b in renamed:
+            print(f"  renamed {a} -> {b}")
+
+def update(args):
+    data = load()
+    for n in data["notes"]:
+        if n["id"] == args.id:
+            if args.desc: n["desc"] = args.desc
+            if args.importance is not None: n["importance"] = args.importance
+            if args.agent: n["agent"] = args.agent
+            if args.note: n["note"] = args.note
+            n["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
+            break
+    else:
+        print(f"id not found: {args.id}"); sys.exit(1)
+    order, renamed = renum(data)
+    print(f"updated {args.id}")
+    for a, b in renamed:
+        print(f"  renamed {a} -> {b}")
+
+def drop(args):
+    data = load()
+    before = len(data["notes"])
+    data["notes"] = [n for n in data["notes"] if n["id"] != args.id]
+    if len(data["notes"]) == before:
+        print(f"id not found: {args.id}"); sys.exit(1)
+    order, renamed = renum(data)
+    print(f"dropped {args.id}")
+    for a, b in renamed:
+        print(f"  renamed {a} -> {b}")
+
+def view(args):
+    data = load()
+    notes = data["notes"]
+    if args.scope == "agent" or args.agent:
+        agent = args.agent or to_me()
+        notes = [n for n in notes if n.get("agent") == agent]
+    order = sorted(notes, key=lambda n: -n.get("importance", 0))
+    if not args.all and args.top:
+        order = order[:args.top]
+    print(f"=== memo view ({args.scope}) top={args.top} ===")
+    for i, n in enumerate(order):
+        print(f"{i+1}. [{n.get('importance',0):.2f}] ({n.get('agent','?')}) #{n['id']} {n['desc']}")
+        if n.get("note"): print(f"     note: {n['note']}")
+
+def to_me():
+    return os.getenv("PI_AGENT_ID") or os.getenv("AGENT_ID") or "me"
+
+p = argparse.ArgumentParser(prog="memo")
+sub = p.add_subparsers(dest="cmd", required=True)
+
+pi = sub.add_parser("insert")
+pi.add_argument("--desc", required=True)
+pi.add_argument("--importance", type=float, default=0.5)
+pi.add_argument("--agent", default=None)
+pi.add_argument("--note", default=None)
+pi.add_argument("--id", default=None)
+pi.set_defaults(fn=insert)
+
+pu = sub.add_parser("update")
+pu.add_argument("--id", required=True)
+pu.add_argument("--desc")
+pu.add_argument("--importance", type=float)
+pu.add_argument("--agent")
+pu.add_argument("--note")
+pu.set_defaults(fn=update)
+
+pd = sub.add_parser("drop")
+pd.add_argument("--id", required=True)
+pd.set_defaults(fn=drop)
+
+pv = sub.add_parser("view")
+pv.add_argument("--scope", choices=["workplace", "agent"], default="workplace")
+pv.add_argument("--agent", default=None)
+pv.add_argument("--top", type=int, default=10)
+pv.add_argument("--all", action="store_true")
+pv.set_defaults(fn=view)
+
+a = p.parse_args()
+a.fn(a)
