@@ -43,6 +43,9 @@ scripts/memo drop --id <id>
 scripts/memo view --scope agent --top 10          # 我自己的
 scripts/memo view --scope workplace --top 10      # 整个工作区共同的
 scripts/memo view --scope workplace --all          # 全部
+# 查看滚动/审计日志（曾经有过的所有条目、改动、被淘汰的记录）
+scripts/memo log --all                             # 全部历史
+scripts/memo log --agent <id> --top 20             # 某 Agent 的历史
 ```
 
 > 工作区默认取当前目录下的 `memo/`；可用环境变量 `MEMO_DIR` 指向任意工作区。
@@ -52,6 +55,15 @@ scripts/memo view --scope workplace --all          # 全部
 
 - **每回合结束或每发现「这值得盯」时**，评估是否 insert / update，再跑相关命令。
 - 读上下文时用 `memo view` 拉 top N，输出量恒定可控，不过度读取。
+
+## 滚动日志
+
+`index.json` 里的 `log` 数组是 Appender-only 的完整审计历史，每次 insert / update / drop 都会追加一条：
+- `insert`：记下重要性、来源 agent、分配的序号。
+- `update`：记下旧/新重要性（即注意力的提升或下降）与重排后的序号。
+- `drop`：记下被挤掉/淘汰的那条（这是「注意力正在舍弃什么」的关键信号）。
+
+用 `memo log --all` 一览全部历史，确认某 Agent 或某段时间，排查健忘/钻牛角尖的轨迹。
 
 ## 与其他文档的关系
 

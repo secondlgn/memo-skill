@@ -32,6 +32,8 @@ scripts/memo insert --desc "锁定技术栈" --importance 0.92 --agent <my-id> -
 scripts/memo update --id <id> --importance 0.75
 # 查看个人 top N
 scripts/memo view --scope agent --top 10
+# 查看滚动日志（全部历史 / 被淘汰的记录）
+scripts/memo log --all
 ```
 
 命令详情见 `SKILL.md`。Agent 用起来只需传语义参数，重排、重命名、写索引全部由脚本自动完成。

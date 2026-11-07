@@ -11,7 +11,10 @@ memo — 工作区注意力本本（single source of truth = index.json）
   memo update --id ID [--desc STR] [--importance FLOAT] [--agent ID]
   memo drop  --id ID
   memo view  [--scope workplace|agent] [--agent ID] [--top N] [--all]
-  memo renum (重排并重命名所有文件，通常在 insert/update 后自动执行)
+  memo log   [--agent ID] [--top N] [--all]   (查看滚动/审计日志)
+
+滚动日志:  index.json 里 log 数组记录每次 insert/update/drop,
+          能看到曾经有过的条目、改动和删除, 反映注意力的变化。
 
 设计要点:
 - 序号是派生值，由索引表在每次 insert/update/drop 后重排并回写文件名。
@@ -26,7 +29,12 @@ MEMO_DIR = os.getenv("MEMO_DIR", os.path.abspath("memo"))
 INDEX = os.path.join(MEMO_DIR, "index.json")
 
 def load():
-    with open(INDEX, "r", encoding="utf-8-sig") as f:
+    """读索引; 若目录/文件不存在则返回空结构并把目录建好。"""
+    os.makedirs(MEMO_DIR, exist_ok=True)
+    idx = os.path.join(MEMO_DIR, "index.json")
+    if not os.path.exists(idx):
+        return {"schema": 1, "notes": [], "log": [], "log_count": 0}
+    with open(idx, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 def save(data):
@@ -63,6 +71,14 @@ def renum(data):
     save(data)
     return order, renamed
 
+def mutate_log(data, op, note):
+    """往 index.json 的 log 里追加一条审计记录"""
+    data.setdefault("log", [])
+    data["log"].append({"ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                         "op": op, **note})
+    data.setdefault("log_count", len(data["log"]))
+    data["log_count"] = len(data["log"])
+
 def insert(args):
     data = load()
     now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -70,19 +86,27 @@ def insert(args):
     note = {
         "id": new_id, "desc": args.desc, "importance": args.importance,
         "agent": args.agent, "created": now, "updated": now,
-        "note": args.note or "", "_file": ""
+        "note": args.note or "", "_file": "", "seq": len(data["notes"])+1
     }
     data["notes"].append(note)
     order, renamed = renum(data)
-    print(f"inserted {new_id}: {fname(len(order), args.desc)} (importance={args.importance})")
+    seq = next((n["seq"] for n in order if n["id"] == new_id), 0)
+    note["seq"] = seq
+    mutate_log(data, "insert", {"id": new_id, "agent": args.agent,
+                                 "desc": args.desc, "imp": args.importance,
+                                 "seq": seq, "note": args.note or ""})
+    save(data)
+    print(f"inserted {new_id}: {fname(seq, args.desc)} (importance={args.importance})")
     if renamed:
         for a, b in renamed:
             print(f"  renamed {a} -> {b}")
 
 def update(args):
     data = load()
+    old = None
     for n in data["notes"]:
         if n["id"] == args.id:
+            old = dict(n)
             if args.desc: n["desc"] = args.desc
             if args.importance is not None: n["importance"] = args.importance
             if args.agent: n["agent"] = args.agent
@@ -92,6 +116,13 @@ def update(args):
     else:
         print(f"id not found: {args.id}"); sys.exit(1)
     order, renamed = renum(data)
+    seq = next((n["seq"] for n in order if n["id"] == args.id), 0)
+    mutate_log(data, "update", {"id": args.id, "agent": args.agent or old.get("agent"),
+                                 "desc": args.desc or old["desc"],
+                                 "old_imp": old["importance"], "new_imp":
+                                 args.importance if args.importance is not None else old["importance"],
+                                 "seq": seq})
+    save(data)
     print(f"updated {args.id}")
     for a, b in renamed:
         print(f"  renamed {a} -> {b}")
@@ -99,11 +130,17 @@ def update(args):
 def drop(args):
     data = load()
     before = len(data["notes"])
-    data["notes"] = [n for n in data["notes"] if n["id"] != args.id]
-    if len(data["notes"]) == before:
+    victim = next((n for n in data["notes"] if n["id"] == args.id), None)
+    if not victim:
         print(f"id not found: {args.id}"); sys.exit(1)
+    data["notes"] = [n for n in data["notes"] if n["id"] != args.id]
     order, renamed = renum(data)
-    print(f"dropped {args.id}")
+    # drop 是滚动本本最重要的信号之一: 记下被挤掉的那条
+    mutate_log(data, "drop", {"id": args.id, "agent": victim.get("agent"),
+                               "desc": victim["desc"], "imp": victim.get("importance"),
+                               "seq": victim.get("seq"), "note": victim.get("note", "")})
+    save(data)
+    print(f"dropped {args.id}: {victim['desc']}")
     for a, b in renamed:
         print(f"  renamed {a} -> {b}")
 
@@ -120,6 +157,25 @@ def view(args):
     for i, n in enumerate(order):
         print(f"{i+1}. [{n.get('importance',0):.2f}] ({n.get('agent','?')}) #{n['id']} {n['desc']}")
         if n.get("note"): print(f"     note: {n['note']}")
+
+def mlog(args):
+    data = load()
+    log = data.get("log", [])
+    if args.agent:
+        log = [e for e in log if e.get("agent") == args.agent]
+    if not args.all and args.top:
+        log = log[-args.top:]
+    print(f"=== memo log ({len(data.get('log',[]))} entries) top={args.top} ===")
+    for e in log:
+        ts = e.get("ts", "")
+        op = e.get("op", "?")
+        if op == "insert":
+            print(f"{ts} + [{e['imp']:.2f}] ({e.get('agent','?')}) #{e['id']} {e['desc']} seq={e.get('seq')}")
+        elif op == "update":
+            print(f"{ts} ~ [{e.get('old_imp'):.2f}->{e.get('new_imp'):.2f}] #{e['id']} {e['desc']} seq={e.get('seq')}")
+        elif op == "drop":
+            print(f"{ts} - [{e.get('imp',0):.2f}] ({e.get('agent','?')}) #{e['id']} {e['desc']} seq={e.get('seq')} < dropped")
+        if e.get("note"): print(f"      note: {e['note']}")
 
 def to_me():
     return os.getenv("PI_AGENT_ID") or os.getenv("AGENT_ID") or "me"
@@ -153,6 +209,12 @@ pv.add_argument("--agent", default=None)
 pv.add_argument("--top", type=int, default=10)
 pv.add_argument("--all", action="store_true")
 pv.set_defaults(fn=view)
+
+pl = sub.add_parser("log")
+pl.add_argument("--agent", default=None)
+pl.add_argument("--top", type=int, default=30)
+pl.add_argument("--all", action="store_true")
+pl.set_defaults(fn=mlog)
 
 a = p.parse_args()
 a.fn(a)
