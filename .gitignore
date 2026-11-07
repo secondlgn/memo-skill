@@ -1,6 +1,7 @@
 # 运行时数据（各工作区自己的 memo 数据，不属于仓库机制本身）
 memo/index.json
 memo/*.md
+memo/history/
 !memo/.gitkeep
 __pycache__/
 *.pyc

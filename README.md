@@ -13,7 +13,7 @@
 memo-skill/
   SKILL.md            # 给 Agent 的完整规则（何时记、如何估值、如何消解冲突）
   scripts/memo        # 单命令：insert / update / drop / view
-  memo/.gitkeep       # 运行时数据目录（index.json + 条目 .md），不随仓库分发
+  memo/.gitkeep       # 运行时数据目录（index.json + 条目 .md + history/），不随仓库分发
 ```
 
 > `memo/` 里是各工作区自己的运行时数据，**不提交**（见 `.gitignore`）。仓库只装「机制」。
