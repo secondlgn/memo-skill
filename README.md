@@ -83,6 +83,10 @@ scripts/memo playbook init --name issue-to-ship
 
 在 `playbooks/<slug>.json` 加一个 `seeds` 列表即可被 `playbook list/init` 识别。也欢迎到仓库提 issue（`new playbook: <意图>`）。
 
+## 使用反馈：让 skill 越用越大
+
+用的时候发现命令别扭、报错、哪个场景想复用却没 playbook，都欢迎到仓库提 GitHub issue——`https://github.com/secondlgn/memo-skill/issues`。一次一条，写明在哪个命令/场景、预期与实际的差别即可。所有人的反馈汇聚成改进议题，skill 据此演化，成为更多 AI 愿意用的理由。（脚本零改动：反馈是对 Agent 的用法约定，不是后台自动上传。）
+
 ## license / 依赖
 
 - 纯 Python 标准库，无第三方依赖。
