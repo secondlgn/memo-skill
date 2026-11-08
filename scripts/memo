@@ -5,37 +5,107 @@ memo — 工作区注意力本本（single source of truth = index.json）
 数据目录   : MEMO_DIR (默认 $CWD/memo)
 索引表     : MEMO_DIR/index.json
 条目文件   : MEMO_DIR/{NNN}-{描述}.md   (NNN 为当前排序序号)
-滚动历史   : MEMO_DIR/history/{编号}-{操作}-{描述}.md  (方案A: 序号递增即时间先后, 时间戳在正文)
+滚动历史   : MEMO_DIR/history.ndjson     (只追加 append-only, 每行一条事件)
+旧历史目录 : MEMO_DIR/history/           (兼容旧版 .md 格式, 仍在时要记住不删)
 
 次命令:
   memo insert --desc STR [--importance 0.00-1.00] [--agent ID] [--note STR]
   memo update --id ID [--desc STR] [--importance FLOAT] [--agent ID]
   memo drop  --id ID
   memo view  [--scope workplace|agent] [--agent ID] [--top N] [--all]
-  memo log   [--agent ID] [--top N] [--all]   (从 history/ 按时间顺序读取)
+  memo log   [--agent ID] [--top N] [--all]        (按时间顺序读历史)
+  memo review [--top N] [--agent ID]               (按影响量找重大改变, 供回顾)
+  memo tidy                                        (总结清理: 聚类/清理/归并候选)
+  memo daydream [--n N] [--mix]                    (白日梦: 随机捞被遗忘的旧线索)
+  memo playbook list|init|route                    (场景化种子备忘)
 
-滚动历史:  每次 insert/update/drop 往 history/ 落一个 {编号}-{操作}-{描述}.md,
-          编号单调递增绝不回写, 文件夹顺序即时间先后, 反映注意力变化。
+滚动历史为只追加 NDJSON:
+  {"op": "...", "id": "...", "agent": "...", "ts": "...", "seq": N,
+   "desc": "...", "imp": 0.90, "delta": +0.90, "old_imp": ..., "note": "..."}
+  - delta = 本次操作对整个 memo 的重要性影响量
+        insert : +新importance(新增注意力占比)
+        update : +new_imp - old_imp(注意力升降)
+        drop   : -importance(释放注意力)
+  "重大改变回顾" = 按 |delta| 从大到小找影响最大的那几次操作。
 
 设计要点:
 - 序号是派生值，由索引表在每次 insert/update/drop 后重排并回写文件名。
+- 并发: 每次变更用虚拟文件锁(哨兵文件 O_CREAT|O_EXCL)串行化, 防多 Agent 同时写 index/历史冲突。
+  跨平台可靠。
 - 重要性初值默认由调用方(模型)给出; 用户强调则按用户。
 - 冲突(同一事实两条不同取值)必须消解, 不并缓存。
-- 谁读谁现场算 top N,输出量恒定可控。
+- 谁读谁现场算 top N, 输出量恒定可控。
 """
-import argparse, json, os, re, sys, datetime
+import argparse, json, os, re, sys, datetime, time
+
+# ---------- 并发虚拟文件锁 (跨平台, 哨兵文件/独占创建) ----------
+def file_lock(path, timeout=10):
+    """上下文管理器: 对 path 加独占锁(哨兵文件 O_CREAT|O_EXCL, 跨平台可靠).
+    用法:
+      with memo_lock():
+          do_mutation()
+    用独立哨兵文件 .memo.lock 实现, 不锁数据文件本身, 数据仍可被多进程并发读。
+    获得锁=成功独占创建哨兵文件; 释放=删除它。若有残留(进程崩溃)会永久锁死。
+    失败重试直到超时抛 TimeoutLockError。
+    """
+    import time as _t
+    LOCK = path
+    class _Lock:
+        def __init__(s, p, to):
+            s.p, s.to, s.acquired = p, to, False
+        def __enter__(s):
+            os.makedirs(os.path.dirname(s.p), exist_ok=True)
+            deadline = _t.time() + s.to
+            while True:
+                try:
+                    fd = os.open(s.p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.close(fd)
+                    s.acquired = True
+                    return s
+                except (OSError, IOError):
+                    # 锁文件已存在 = 他人持锁
+                    if _t.time() > deadline:
+                        raise TimeoutLockError(f"memo lock timeout: {s.p} (残留锁? 手动删除该文件)")
+                    _t.sleep(0.05)
+        def __exit__(s, *exc):
+            if s.acquired:
+                try:
+                    os.remove(s.p)
+                except FileNotFoundError:
+                    pass
+            return False
+    return _Lock(path, timeout)
+
+def memo_lock(timeout=10):
+    return file_lock(LOCK_FILE, timeout)
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)) + "/..")
 MEMO_DIR = os.getenv("MEMO_DIR", os.path.abspath("memo"))
 INDEX = os.path.join(MEMO_DIR, "index.json")
-HISTORY_DIR = os.path.join(MEMO_DIR, "history")
+HISTORY_NDJSON = os.path.join(MEMO_DIR, "history.ndjson")
+HISTORY_DIR = os.path.join(MEMO_DIR, "history")  # 旧 .md 版本, 兼容只读
+LOCK_FILE = os.path.join(MEMO_DIR, ".memo.lock")
 PLAYBOOK_DIR = os.getenv("PLAYBOOK_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "../playbooks"))
 GITHUB_REPO = os.getenv("MEMO_GITHUB_REPO", "https://github.com/secondlgn/memo-skill/issues/new")
 
-_hseq = [0]
+# ---------- 历史(只追加 NDJSON) ----------
 def _next_seq():
-    """单调递增、只在 history/ 用、绝不回写的编号。"""
+    """单调递增 seq, 供历史事件使用. 从 ndjson 满载最后一条 + 旧 .md 目录取 max."""
     m = 0
+    if os.path.exists(HISTORY_NDJSON):
+        try:
+            with open(HISTORY_NDJSON, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                        m = max(m, int(d.get("seq", 0)))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     if os.path.isdir(HISTORY_DIR):
         for name in os.listdir(HISTORY_DIR):
             prefix = name.split("-", 1)[0]
@@ -43,36 +113,90 @@ def _next_seq():
                 m = max(m, int(prefix))
     return m + 1
 
-def hist_fname(seq, op, desc):
-    return f"{seq:04d}-{op}-{clean_desc(desc)}.md"
+def calc_delta(op, note):
+    """计算一次操作对整个 memo 的重要性影响量 delta."""
+    if op == "insert":
+        return note.get("imp", 0.0)
+    if op == "update":
+        return (note.get("new_imp") or 0.0) - (note.get("old_imp") or 0.0)
+    if op == "drop":
+        return -(note.get("imp", 0.0))
+    return 0.0
 
-def write_history(data, op, note):
-    """往 history/ 目录落一条审计记录(方案A). 时间戳放正文, 序号递增即排序。"""
-    os.makedirs(HISTORY_DIR, exist_ok=True)
-    seq = _next_seq()
-    ts = datetime.datetime.now().isoformat(timespec="seconds")
-    desc = clean_desc(note.get("desc", op))
-    body = [f"# {'insert' if op=='insert' else 'update' if op=='update' else 'drop'} #{note.get('id','')}",
-            "",
-            f"- 时间 : {ts}",
-            f"- 操作 : {op}",
-            f"- Agent: {note.get('agent','?')}",
-            f"- 重要性: {note.get('old_imp', note.get('imp','-'))}" + (f" -> {note.get('new_imp')}" if op=='update' else ""),
-            f"- 序号: {note.get('seq',0)}",
-            "",
-            f"描述: {note.get('desc','')}"]
-    if note.get("note"): body.append(f"备注: {note['note']}")
-    with open(os.path.join(HISTORY_DIR, hist_fname(seq, op, desc)), "w", encoding="utf-8") as f:
-        f.write("\n".join(body))
-    return seq
+def append_history(note):
+    """把一条事件追加到 history.ndjson (只追加). 调用方应已持有锁."""
+    os.makedirs(MEMO_DIR, exist_ok=True)
+    rec = {
+        "op": note.get("op"), "id": note.get("id"),
+        "agent": note.get("agent", "?"), "ts": note.get("ts") or datetime.datetime.now().isoformat(timespec="seconds"),
+        "seq": note.get("seq", 0), "desc": note.get("desc", ""),
+        "imp": note.get("imp"), "old_imp": note.get("old_imp"),
+        "new_imp": note.get("new_imp"), "delta": note.get("delta"),
+        "note": note.get("note", ""),
+    }
+    with open(HISTORY_NDJSON, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
+def read_all_history():
+    """读历史: 新 ndjson + 旧 .md 目录(兼容)。按 seq 升序(时间先后)。"""
+    out = []
+    # 1) ndjson
+    if os.path.exists(HISTORY_NDJSON):
+        try:
+            with open(HISTORY_NDJSON, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        out.append(json.loads(line))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    # 2) 旧 .md 目录 (只读兼容, 不写)
+    if os.path.isdir(HISTORY_DIR):
+        for fn in sorted(os.listdir(HISTORY_DIR)):
+            if not fn.endswith(".md"):
+                continue
+            m = re.match(r"(\d+)-(\w+)-(.*)\.md", fn)
+            if not m:
+                continue
+            rec = {"op": "?", "desc": fn}
+            try:
+                with open(os.path.join(HISTORY_DIR, fn), encoding="utf-8-sig") as f:
+                    for line in f:
+                        ls = line.strip()
+                        if ls.startswith("- 操作"): rec["op"] = ls.split(":", 1)[1].strip()
+                        elif ls.startswith("- Agent"): rec["agent"] = ls.split(":", 1)[1].strip()
+                        elif ls.startswith("描述"): rec["desc"] = ls.split(":", 1)[1].strip()
+                        elif ls.startswith("- 时间"):
+                            try: rec["ts"] = ls.split(":", 1)[1].strip()
+                            except Exception: pass
+            except Exception:
+                pass
+            rec["seq"] = int(m.group(1)); rec["legacy"] = True
+            out.append(rec)
+    out.sort(key=lambda r: r.get("seq", 0))
+    return out
+
+def hist_desc(r, extra=""):
+    imp = r.get("imp")
+    if imp is None:
+        impf = ""
+    else:
+        impf = f" imp={imp:.2f}"
+    d = r.get("delta")
+    df = f" delta={d:+.2f}" if d is not None else ""
+    return f"({r.get('seq','?')}) [{r.get('op','?')}/{r.get('agent','?')}] {r.get('desc','')}{impf}{df}{extra}"
+
+# ---------- 索引读写 ----------
 def load():
     """读索引; 若目录/文件不存在则返回空结构并把目录建好。"""
     os.makedirs(MEMO_DIR, exist_ok=True)
-    idx = os.path.join(MEMO_DIR, "index.json")
-    if not os.path.exists(idx):
+    if not os.path.exists(INDEX):
         return {"schema": 1, "notes": [], "log": [], "log_count": 0}
-    with open(idx, "r", encoding="utf-8-sig") as f:
+    with open(INDEX, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 def save(data):
@@ -103,7 +227,6 @@ def renum(data):
             os.rename(oldf, nfpath)
             renamed.append((os.path.basename(oldf), nf))
         elif not os.path.exists(nfpath):
-            # 新文件: 文件名=概述(desc), 正文=一段详情(note)
             body = n.get("note", "") or ""
             if body.strip() == "" and n.get("desc"):
                 body = n["desc"]
@@ -113,74 +236,76 @@ def renum(data):
     save(data)
     return order, renamed
 
-def mutate_log(data, op, note):
-    """兼容保留: 由 insert/update/drop 调用, 实际写入 history/ 文件。"""
-    write_history(data, op, note)
+def _mutate(mutator):
+    """通用变更封装: 加锁 -> 变更 index -> 追加历史 -> 释放锁。
+    mutator(data): 修改 data, 返回要追加的 history note dict(含 op/id/agent/desc/delta 等)。
+    """
+    with memo_lock():
+        data = load()
+        note = mutator(data)
+        renum(data)  # 内部会 save
+        # 追加历史也在锁内, 保证 index 与 history 一致顺序
+        note.setdefault("seq", _next_seq())
+        note.setdefault("ts", datetime.datetime.now().isoformat(timespec="seconds"))
+        note.setdefault("delta", calc_delta(note.get("op"), note))
+        append_history(note)
+        return note, data
 
+# ---------- 业务命令 ----------
 def insert(args):
-    data = load()
     now = datetime.datetime.now().isoformat(timespec="seconds")
-    new_id = args.id or (f"n{int(datetime.datetime.now().timestamp()*1000)}")
+    new_id = args.id or (f"n{int(time.time()*1000)}")
     note = {
         "id": new_id, "desc": args.desc, "importance": args.importance,
         "agent": args.agent, "created": now, "updated": now,
-        "note": args.note or "", "_file": "", "seq": len(data["notes"])+1
+        "note": args.note or "", "_file": "", "seq": 0,
     }
-    data["notes"].append(note)
-    order, renamed = renum(data)
-    seq = next((n["seq"] for n in order if n["id"] == new_id), 0)
-    note["seq"] = seq
-    mutate_log(data, "insert", {"id": new_id, "agent": args.agent,
-                                 "desc": args.desc, "imp": args.importance,
-                                 "seq": seq, "note": args.note or ""})
-    save(data)
+    def m(data):
+        data["notes"].append(dict(note))
+        return {"op": "insert", "id": new_id, "agent": args.agent,
+                "desc": args.desc, "imp": args.importance, "note": args.note or ""}
+    got, data = _mutate(m)
+    seq = got["seq"]
     print(f"inserted {new_id}: {fname(seq, args.desc)} (importance={args.importance})")
-    if renamed:
-        for a, b in renamed:
-            print(f"  renamed {a} -> {b}")
 
 def update(args):
-    data = load()
-    old = None
-    for n in data["notes"]:
-        if n["id"] == args.id:
-            old = dict(n)
-            if args.desc: n["desc"] = args.desc
-            if args.importance is not None: n["importance"] = args.importance
-            if args.agent: n["agent"] = args.agent
-            if args.note: n["note"] = args.note
-            n["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
-            break
-    else:
+    def m(data):
+        old = None
+        for n in data["notes"]:
+            if n["id"] == args.id:
+                old = dict(n)
+                if args.desc: n["desc"] = args.desc
+                if args.importance is not None: n["importance"] = args.importance
+                if args.agent: n["agent"] = args.agent
+                if args.note: n["note"] = args.note
+                n["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
+                break
+        if old is None:
+            raise KeyError(args.id)
+        return {"op": "update", "id": args.id, "agent": args.agent or old.get("agent"),
+                "desc": args.desc or old["desc"], "old_imp": old["importance"],
+                "new_imp": args.importance if args.importance is not None else old["importance"],
+                "note": args.note or ""}
+    try:
+        got, data = _mutate(m)
+        print(f"updated {args.id} (delta={got['delta']:+.2f})")
+    except KeyError:
         print(f"id not found: {args.id}"); sys.exit(1)
-    order, renamed = renum(data)
-    seq = next((n["seq"] for n in order if n["id"] == args.id), 0)
-    mutate_log(data, "update", {"id": args.id, "agent": args.agent or old.get("agent"),
-                                 "desc": args.desc or old["desc"],
-                                 "old_imp": old["importance"], "new_imp":
-                                 args.importance if args.importance is not None else old["importance"],
-                                 "seq": seq})
-    save(data)
-    print(f"updated {args.id}")
-    for a, b in renamed:
-        print(f"  renamed {a} -> {b}")
 
 def drop(args):
-    data = load()
-    before = len(data["notes"])
-    victim = next((n for n in data["notes"] if n["id"] == args.id), None)
-    if not victim:
+    def m(data):
+        victim = next((n for n in data["notes"] if n["id"] == args.id), None)
+        if not victim:
+            raise KeyError(args.id)
+        data["notes"] = [n for n in data["notes"] if n["id"] != args.id]
+        return {"op": "drop", "id": args.id, "agent": victim.get("agent"),
+                "desc": victim["desc"], "imp": victim.get("importance"),
+                "note": victim.get("note", "")}
+    try:
+        got, data = _mutate(m)
+        print(f"dropped {args.id}: {got['desc']} (delta={got['delta']:+.2f})")
+    except KeyError:
         print(f"id not found: {args.id}"); sys.exit(1)
-    data["notes"] = [n for n in data["notes"] if n["id"] != args.id]
-    order, renamed = renum(data)
-    # drop 是滚动本本最重要的信号之一: 记下被挤掉的那条
-    mutate_log(data, "drop", {"id": args.id, "agent": victim.get("agent"),
-                               "desc": victim["desc"], "imp": victim.get("importance"),
-                               "seq": victim.get("seq"), "note": victim.get("note", "")})
-    save(data)
-    print(f"dropped {args.id}: {victim['desc']}")
-    for a, b in renamed:
-        print(f"  renamed {a} -> {b}")
 
 def view(args):
     data = load()
@@ -197,31 +322,37 @@ def view(args):
         if n.get("note"): print(f"     note: {n['note']}")
 
 def mlog(args):
-    # 从 history/ 文件夹读取, 按文件名(编号)排序即时间先后
-    if not os.path.isdir(HISTORY_DIR):
-        print("=== memo log: 暂无历史 history/ 目录 ==="); return
-    files = sorted(os.listdir(HISTORY_DIR))
-    selected = []
-    for fn in files:
-        if not fn.endswith(".md"): continue
-        parts = fn.split("-")
-        seq = parts[0]; op = parts[1]; desc = "-".join(parts[2:]).rsplit(".md",1)[0]
-        if args.agent:
-            # 需要读文件内 Agent 字段来过滤
-            pass
-        selected.append((fn, seq, op, desc))
-    if not args.all and args.top:
-        selected = selected[-args.top:]
-    print(f"=== memo log ({len(selected)}/{len([x for x in files if x.endswith('.md')])} shown) ===")
-    for fn, seq, op, desc in selected:
-        mark = {"insert":"+","update":"~","drop":"-"}.get(op,"=")
-        print(f"{seq}: {mark} [{op}] {desc}")
+    hist = read_all_history()
+    if args.agent:
+        hist = [h for h in hist if h.get("agent") == args.agent]
+    shown = hist if args.all else hist[- (args.top or 30):]
+    print(f"=== memo log ({len(shown)}/ {len(hist)} shown, 时间先后) ===")
+    for r in shown:
+        mark = {"insert": "+", "update": "~", "drop": "-"}.get(r.get("op"), "=")
+        print(f"{mark} {hist_desc(r)}")
+
+def review(args):
+    """回顾: 按影响量 |delta| 找重大改变. (delta 由脚本在写历史时记录)"""
+    hist = read_all_history()
+    if args.agent:
+        hist = [h for h in hist if h.get("agent") == args.agent]
+    # 有 delta 的才参与排序(旧 .md 无 delta → 归入 '无影响量' 末段)
+    with_d = [h for h in hist if h.get("delta") is not None]
+    without_d = [h for h in hist if h.get("delta") is None]
+    with_d.sort(key=lambda h: -abs(h.get("delta", 0)))
+    sel = with_d[:args.top] if with_d else []
+    print(f"=== memo review: 重大改变回顾 (按 |影响量| 排序, top={args.top}) ===")
+    if not sel:
+        print("  (暂无带影响量的历史; 新写入会记录 delta)")
+    for r in sel:
+        print(hist_desc(r))
+    if without_d:
+        print(f"  ...另有 {len(without_d)} 条旧 .md 记录无影响量(仅按时间列)")
 
 def playbooks_dir():
     return os.path.normpath(PLAYBOOK_DIR)
 
 def list_playbooks():
-    """列出可用场景(playbook)."""
     d = playbooks_dir()
     out = []
     if not os.path.isdir(d):
@@ -265,21 +396,25 @@ def playbook_init(args):
     data = load()
     now = datetime.datetime.now().isoformat(timespec="seconds")
     added = 0
-    for i, s in enumerate(pb["seeds"]):
-        new_id = f"pb-{pb['slug']}-{i}"
-        if any(n.get("desc") == s["desc"] for n in data["notes"]):
-            print(f"  skip(已存在): {s['desc']}")
-            continue
-        entry = {
-            "id": new_id, "desc": s["desc"], "importance": s.get("importance", 0.8),
-            "agent": args.agent or "memo", "created": now, "updated": now,
-            "note": s.get("note", ""), "_file": "", "seq": len(data["notes"])+1,
-            "source": pb["slug"]
-        }
-        data["notes"].append(entry)
-        added += 1
-    order, renamed = renum(data)
-    save(data)
+    seq = _next_seq()
+    with memo_lock():
+        for s in pb["seeds"]:
+            new_id = f"pb-{pb['slug']}-{seq}"
+            if any(n.get("desc") == s["desc"] for n in data["notes"]):
+                print(f"  skip(已存在): {s['desc']}")
+                continue
+            entry = {
+                "id": new_id, "desc": s["desc"], "importance": s.get("importance", 0.8),
+                "agent": args.agent or "memo", "created": now, "updated": now,
+                "note": s.get("note", ""), "_file": "", "seq": 0, "source": pb["slug"]
+            }
+            data["notes"].append(entry)
+            append_history({"op": "insert", "id": new_id, "agent": args.agent or "memo",
+                            "desc": s["desc"], "imp": s.get("importance", 0.8),
+                            "seq": seq, "note": s.get("note", ""), "delta": s.get("importance", 0.8)})
+            seq += 1
+            added += 1
+        order, renamed = renum(data)
     print(f"=== 场景 {args.name} 已灌入 memo({added} 条新种子) ===")
     for a, b in renamed:
         print(f"  renamed {a} -> {b}")
@@ -297,57 +432,25 @@ def playbook_route(args):
 def to_me():
     return os.getenv("PI_AGENT_ID") or os.getenv("AGENT_ID") or "me"
 
-# ---------------- tidy / daydream / watch ----------------
+def memo_lock(timeout=10):
+    """对 MEMO_DIR/.memo.lock 加独占锁的上下文管理器; 独立于数据文件,
+    这样数据可同时被多进程读, 写变更串行化。"""
+    return file_lock(LOCK_FILE, timeout)
 
-def read_all_history():
-    """读 history/ 全部记录(按序号升序,即时间先后), 返回 list of dict."""
-    out = []
-    if not os.path.isdir(HISTORY_DIR):
-        return out
-    for fn in sorted(os.listdir(HISTORY_DIR)):
-        if not fn.endswith(".md"):
-            continue
-        seq = fn.split("-", 1)[0]
-        if not seq.isdigit():
-            continue
-        body = ""
-        try:
-            with open(os.path.join(HISTORY_DIR, fn), encoding="utf-8-sig") as f:
-                body = f.read()
-        except Exception:
-            pass
-        # 从正文提取关键字段(容错: 文件可能旧格式/极简)
-        rec = {"file": fn, "seq": int(seq)}
-        for line in body.splitlines():
-            ls = line.strip()
-            if ls.startswith("- 时间"): rec["ts"] = ls.split(":", 1)[1].strip()
-            elif ls.startswith("- 操作"): rec["op"] = ls.split(":", 1)[1].strip()
-            elif ls.startswith("- Agent"): rec["agent"] = ls.split(":", 1)[1].strip()
-            elif ls.startswith("描述"): rec["desc"] = ls.split(":", 1)[1].strip()
-        rec.setdefault("op", "?"); rec.setdefault("desc", fn)
-        out.append(rec)
-    return out
-
+# ---------- tidy / daydream ----------
 def tidy(args):
-    """总结清理: 采集聚类 + 去重构的合理建议, 不改数据.
-    输出供 agent 阅读并据此调 insert/update/drop 落地。
-    """
+    from collections import defaultdict
     data = load()
     notes = data["notes"]
     hist = read_all_history()
     print(f"=== memo tidy: 总结清理报告 (notes={len(notes)}, history={len(hist)}) ===")
-
-    # 1. 按 source 聚类(playbook 种子 vs 普通条目)
-    from collections import defaultdict
     by_src = defaultdict(list)
     for n in notes:
-        by_src[n.get("source") or n.get("agent") or "?"] .append(n)
+        by_src[n.get("source") or n.get("agent") or "?"].append(n)
     print("\n[1] 按来源归类:")
     for k, lst in sorted(by_src.items()):
         imps = ", ".join(f"{n['desc']}({n.get('importance',0):.2f})" for n in lst)
         print(f"  {k}: {len(lst)}条 | {imps}")
-
-    # 2. 低重要性条款 → 清理候选
     print("\n[2] 低重要性(<=0.3) 清理候选:")
     low = [n for n in notes if n.get("importance", 0) <= 0.3]
     if low:
@@ -355,41 +458,30 @@ def tidy(args):
             print(f"  drop? #{n['id']} [{n.get('importance',0):.2f}] {n['desc']}")
     else:
         print("  无")
-
-    # 3. 近似 desc → 可能可归并(粗糙去重: 归一化字符串后看重复)
     print("\n[3] 疑似重复/可归并(按去空格后首8字匹配):")
     def norm(s):
         return "".join(ch for ch in s if not ch.isspace())[:8]
-    seen = {}
-    merged = []
+    seen, merged = {}, []
     for n in notes:
         key = norm(n.get("desc", ""))
         if not key: continue
-        if key in seen:
-            merged.append((seen[key], n))
-        else:
-            seen[key] = n
+        if key in seen: merged.append((seen[key], n))
+        else: seen[key] = n
     if merged:
         for a, b in merged:
             print(f"  ? {a['id']}:{a['desc']}  vs  {b['id']}:{b['desc']}")
     else:
         print("  无(粗糙匹配无命中, 更审计义重复由 agent 判断)")
-
-    # 4. 被遗忘的旧目标: 最近 history 里 drop 的、可能想重拾
-    print("\n[4] 最近 drop 过的(可当重拾候选/历史回顾):")
     drops = [r for r in hist if r.get("op") == "drop"][-6:]
+    print("\n[4] 最近 drop 过的(可当重拾候选/历史回顾):")
     if drops:
         for r in drops:
-            print(f"  曾drop(#{r['seq']}): {r['desc']}")
+            print(f"  曾drop{hist_desc(r)}")
     else:
         print("  无")
-
     print("\n[建议] 脚本已采集结构; 由 agent 判断哪些 update 权重/归并/drop, 再调对应命令落地。")
 
 def daydream(args):
-    """白日梦: 从历史里随机捞被遗忘/旧线索, 当作灵感与备忘补给。
-    不改数据, 只呈现。 agent 读到有感想的可经 insert 记回。
-    """
     import random
     hist = read_all_history()
     data = load()
@@ -397,8 +489,6 @@ def daydream(args):
         print("=== memo daydream: 暂无任何历史, 先去写点 memo 吧 ==="); return
     n = max(1, args.n)
     print(f"=== memo daydream: 随机回望 ({len(hist)} 条历史) ===")
-
-    # 从历史随机抽(偏向 drop, 因为那是'被遗忘'的集中地)
     drops = [r for r in hist if r.get("op") == "drop"]
     others = [r for r in hist if r.get("op") != "drop"]
     pool = drops + others if args.mix else drops
@@ -407,105 +497,77 @@ def daydream(args):
     random.shuffle(pool)
     print(f"\n[灵感抽屉] 随机抽 {min(n, len(pool))} 条旧痕迹:")
     for r in pool[:n]:
-        print(f"  ({r['seq']}) [{r.get('op','?')}/{r.get('agent','?')}] {r.get('desc','')}")
-
-    # 顺便附上仍盯着的 top, 好对照'忘'与'记'
+        print(f"  {hist_desc(r)}")
     order = sorted(data["notes"], key=lambda x: -x.get("importance", 0))
     print("\n[对照] 现在仍在盯的 top3:")
     for x in order[:3]:
         print(f"  [{x.get('importance',0):.2f}] {x.get('desc','')}")
-
     print("\n[说明] 脚本只随机捞线索; 若某条值得重拾/成灵感, 由 agent 经 insert 记回当前本子。")
 
-def watch(args):
-    """上上网/业界对照: 脚本提炼当前关注主题, 交给有联网能力的 agent 去查当前最佳实践。
-    --topic 可显式指定; 否则用重要性最高的几条 desc/note 当主题来源。
-    """
-    data = load()
-    notes = data["notes"]
-    order = sorted(notes, key=lambda x: -x.get("importance", 0))
-    print("=== memo watch: 业界对照发现 (看大家/当前最佳实践) ===")
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(prog="memo")
+    sub = p.add_subparsers(dest="cmd", required=True)
 
-    if args.topic:
-        topics = [args.topic]
+    pi = sub.add_parser("insert")
+    pi.add_argument("--desc", required=True)
+    pi.add_argument("--importance", type=float, default=0.5)
+    pi.add_argument("--agent", default=None)
+    pi.add_argument("--note", default=None)
+    pi.add_argument("--id", default=None)
+    pi.set_defaults(fn=insert)
+
+    pu = sub.add_parser("update")
+    pu.add_argument("--id", required=True)
+    pu.add_argument("--desc")
+    pu.add_argument("--importance", type=float)
+    pu.add_argument("--agent")
+    pu.add_argument("--note")
+    pu.set_defaults(fn=update)
+
+    pd = sub.add_parser("drop")
+    pd.add_argument("--id", required=True)
+    pd.set_defaults(fn=drop)
+
+    pv = sub.add_parser("view")
+    pv.add_argument("--scope", choices=["workplace", "agent"], default="workplace")
+    pv.add_argument("--agent", default=None)
+    pv.add_argument("--top", type=int, default=10)
+    pv.add_argument("--all", action="store_true")
+    pv.set_defaults(fn=view)
+
+    pl = sub.add_parser("log")
+    pl.add_argument("--agent", default=None)
+    pl.add_argument("--top", type=int, default=30)
+    pl.add_argument("--all", action="store_true")
+    pl.set_defaults(fn=mlog)
+
+    pr = sub.add_parser("review")
+    pr.add_argument("--top", type=int, default=5)
+    pr.add_argument("--agent", default=None)
+    pr.set_defaults(fn=review)
+
+    ptd = sub.add_parser("tidy")
+    ptd.set_defaults(fn=tidy)
+
+    pdd = sub.add_parser("daydream")
+    pdd.add_argument("--n", type=int, default=3)
+    pdd.add_argument("--mix", action="store_true")
+    pdd.set_defaults(fn=daydream)
+
+    ppb = sub.add_parser("playbook")
+    ppb_sub = ppb.add_subparsers(dest="pcmd")
+    ppb_list = ppb_sub.add_parser("list"); ppb_list.set_defaults(pfn=playbook_list)
+    ppb_init = ppb_sub.add_parser("init")
+    ppb_init.add_argument("--name", required=True)
+    ppb_init.add_argument("--dry-run", action="store_true")
+    ppb_init.add_argument("--agent", default=None)
+    ppb_init.set_defaults(pfn=playbook_init)
+    ppb_route = ppb_sub.add_parser("route")
+    ppb_route.add_argument("--query", default=None)
+    ppb_route.set_defaults(pfn=playbook_route)
+
+    a = p.parse_args()
+    if hasattr(a, "pfn"):
+        a.pfn(a)
     else:
-        # 取 top 几条的关注点作主题原料
-        topics = []
-        for n in order[: args.top]:
-            topics.append(n.get("desc", ""))
-            if n.get("note"): topics.append(n["note"])
-    print("\n[我的关注主题] (供检索当前最佳实践):")
-    for t in topics:
-        print(f"  - {t}")
-    print("\n[动作] 脚本已给出主题; 请用带联网能力的工具(Web/搜索/browser)基于这些主题查当前业界最佳实践,")
-    print("       得到的可复现做法/来源链接记回 memo(insert 一条'外部最佳实践'), 或与现有做法对照后 update。")
-    print(f"       提新场景反馈: {GITHUB_REPO}")
-
-
-p = argparse.ArgumentParser(prog="memo")
-sub = p.add_subparsers(dest="cmd", required=True)
-
-pi = sub.add_parser("insert")
-pi.add_argument("--desc", required=True)
-pi.add_argument("--importance", type=float, default=0.5)
-pi.add_argument("--agent", default=None)
-pi.add_argument("--note", default=None)
-pi.add_argument("--id", default=None)
-pi.set_defaults(fn=insert)
-
-pu = sub.add_parser("update")
-pu.add_argument("--id", required=True)
-pu.add_argument("--desc")
-pu.add_argument("--importance", type=float)
-pu.add_argument("--agent")
-pu.add_argument("--note")
-pu.set_defaults(fn=update)
-
-pd = sub.add_parser("drop")
-pd.add_argument("--id", required=True)
-pd.set_defaults(fn=drop)
-
-pv = sub.add_parser("view")
-pv.add_argument("--scope", choices=["workplace", "agent"], default="workplace")
-pv.add_argument("--agent", default=None)
-pv.add_argument("--top", type=int, default=10)
-pv.add_argument("--all", action="store_true")
-pv.set_defaults(fn=view)
-
-pl = sub.add_parser("log")
-pl.add_argument("--agent", default=None)
-pl.add_argument("--top", type=int, default=30)
-pl.add_argument("--all", action="store_true")
-pl.set_defaults(fn=mlog)
-
-ppb = sub.add_parser("playbook")
-ppb_sub = ppb.add_subparsers(dest="pcmd")
-ppb_list = ppb_sub.add_parser("list")
-ppb_list.set_defaults(pfn=playbook_list)
-ppb_init = ppb_sub.add_parser("init")
-ppb_init.add_argument("--name", required=True)
-ppb_init.add_argument("--dry-run", action="store_true")
-ppb_init.add_argument("--agent", default=None)
-ppb_init.set_defaults(pfn=playbook_init)
-ppb_route = ppb_sub.add_parser("route")
-ppb_route.add_argument("--query", default=None)
-ppb_route.set_defaults(pfn=playbook_route)
-
-ptd = sub.add_parser("tidy")
-ptd.set_defaults(fn=tidy)
-
-pdd = sub.add_parser("daydream")
-pdd.add_argument("--n", type=int, default=3)
-pdd.add_argument("--mix", action="store_true", help="不只抽 drop, 混入 insert/update")
-pdd.set_defaults(fn=daydream)
-
-pw = sub.add_parser("watch")
-pw.add_argument("--topic", default=None)
-pw.add_argument("--top", type=int, default=3)
-pw.set_defaults(fn=watch)
-
-a = p.parse_args()
-if hasattr(a, "pfn"):
-    a.pfn(a)
-else:
-    a.fn(a)
+        a.fn(a)

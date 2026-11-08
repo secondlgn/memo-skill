@@ -27,7 +27,7 @@
 - **一个事实只有一条记录、一个权重、一个归属。**
 - **冲突必须解决，不并存。** 同一事实出现两个不同取值，必须修改旧条目而不是新增；矛盾即触发 edit 或询问用户，绝不缓存对立的旧值。
 - 索引 `memo/index.json` 是唯一真相源，文件名的序号只是它的展示快照。
-- 滚动历史落盘在同目录的 `memo/history/`（`{编号}-{操作}-{描述}.md`），不占 index.json。
+- 滚动历史落盘在同目录的 `memo/history.ndjson`（只追加，每行一条事件），不占 index.json。
 
 ## 使用命令
 
@@ -47,13 +47,13 @@ scripts/memo view --scope workplace --all          # 全部
 # 查看滚动/审计日志（曾经有过的所有条目、改动、被淘汰的记录）
 scripts/memo log --all                             # 全部历史
 scripts/memo log --agent <id> --top 20             # 某 Agent 的历史
+# 回顾：按对 memo 的重要性影响量 |delta| 找重大改变事件，分析'什么造成了重大改变'
+scripts/memo review [--top 5] [--agent <id>]
 
 # 总结清理：采集聚类 + 归并/重排/清理候选，供 agent 判断后落地
 scripts/memo tidy
 # 白日梦：从历史随手捞被遗忘/旧线索，当灵感与备忘补给
 scripts/memo daydream [--n 3] [--mix]
-# 业界对照：提炼当前关注主题，交有联网能力的 agent 去查当前最佳实践
-scripts/memo watch [--topic <X>] [--top 3]
 ```
 
 > 工作区默认取当前目录下的 `memo/`；可用环境变量 `MEMO_DIR` 指向任意工作区。
@@ -88,15 +88,13 @@ pi 里通过 `~/.pi/agent/prompts/memo.md` 提供 `/memo` 命令：输入后 LLM
 
 > /memo 的具体实现是一个 pi prompt template，代码在 `prompts/memo.md`（仓库内一份，安装时可拷贝到 `~/.pi/agent/prompts/`）。
 
-## 梳理类命令：tidy / daydream / watch
+## 梳理类命令：tidy / daydream / review
 
 三兄弟都是「广播」而非「自动魔法」：**脚本负责机械采集汇聚，agent(LLM)基于脚本给出的结构化素材做语义判断，再调 insert/update/drop 落地。** 保持「脚本存取、agent 判断」哲学。
 
-- **`scripts/memo tidy`** —— 总结清理。脚本扫描 index+history，输出：①按来源/agent 聚类 ②低重要性清理候选 ③疑似重复/可归并(粗糙归一化匹配) ④最近 drop 的旧目标。**脚本不自己删**，只给候选；agent 决定每条 update 权重 / 归并 / drop。归并 = 挑一个保留、其余 drop、note 合并进保留项；重排由重要性自动驱动，无需额外命令。是滚动本本的「被挤掉的东西里，偶有值得重拾的」的补给。
-- **`scripts/memo daydream [--n N] [--mix]`** —— 白日梦。从 history/ 随机捞被 drop 的旧线索(默认纯 drop 池，`--mix` 混入 insert/update)，并列出现在仍盯的 top3 对照。脚本只随机捞；agent 觉得值得重拾就 insert 回当前本子，纯当灵感也可以只记一笔 `insert`。
-- **`scripts/memo watch [--topic X] [--top N]`** —— 业界对照。脚本提炼当前关注主题(默认取重要性最高几条的 desc/note，`--topic` 可显式覆盖)，**交给有联网能力的 agent** 据此查当前业界最佳实践。可复现做法/来源链接 `insert` 一条「外部最佳实践」，或与现有做法 `update` 对照。
-
-> `watch` 不内置爬虫（保持纯 stdlib 无第三方依赖）：联网查询由 agent 自己的 Web 工具完成，脚本只给 query 原料。
+- **`scripts/memo tidy`** —— 总结清理。脚本扫描 index+history，输出：①按来源/agent 聚类 ②低重要性清理候选 ③疑似重复/可归并(粗糙归一化匹配) ④最近 drop 的旧目标。**脚本不自己删**，只给候选；agent 决定每条 update 权重 / 归并 / drop。归并 = 挑一个保留、其余 drop、note 合并进保留项；重排由重要性自动驱动，无需额外命令。
+- **`scripts/memo daydream [--n N] [--mix]`** —— 白日梦。从业已写下的历史里随机捞被 drop 的旧线索(默认纯 drop 池，`--mix` 混入 insert/update)，并列出现在仍盯的 top3 对照。脚本只随机捞；agent 觉得值得重拾就 insert 回当前本子，纯当灵感也可以只记一笔 `insert`。
+- **`scripts/memo review [--top N]`** —— 回顾重大改变。每次操作写历史时都记录**对 memo 的重要性影响量 `delta`**（insert=+新重要性 / update=+新-旧 / drop=-重要性）。`review` 按 |delta| 从大到小列出影响最大的那次操作——**触发重大改变的事件，能直接从历史里找出来并回顾分析**。
 
 ## 开场协议（每次会话必做，零成本注意力引导）
 
@@ -109,7 +107,7 @@ scripts/memo log --agent <my-id> --top 5     # 2. 最近的注意力变化：最
 
 这两条输出就是「现在该盯着什么 + 最近注意力怎么变的」。它们进上下文后就构成了我本次会话的注意力基线——
 - 若发现该盯的没盯（健忘），或某条权重一枝独秀压倒主线（钻牛角尖），先自我纠正再动手。
-- 用户随时扫 `memo/`（序号排序）或 `memo/history/`（时间排序）来诊断/干预我。
+- 用户随时扫 `memo/`（序号排序）或 `memo/history.ndjson`（时间顺序）来诊断/干预我。
 
 成本极低：`view` 恒一屏，`log` 只取最近几条，不读全量历史。
 
@@ -118,17 +116,14 @@ scripts/memo log --agent <my-id> --top 5     # 2. 最近的注意力变化：最
 - **每回合结束或每发现「这值得盯」时**，评估是否 insert / update，再跑相关命令。
 - 写回时同一事实只改不堆（一致性规则），冲突必消解。
 
-## 滚动日志
+## 滚动日志（只追加 NDJSON + 并发锁）
 
-每次 insert / update / drop 都往 `memo/history/` 落一个文件，文件名 `{编号}-{操作}-{描述}.md`（方案A）：
-- **编号**单调递增、绝不回写，文件夹顺序即时间先后。
-- **操作**：`insert` / `update` / `drop`。
-- **描述**：这条记录的 5~10 字实义描述（与笔记本身同一要求）。
-- **时间戳**写在正文，不进标题。
+每次 insert / update / drop 都往 `memo/history.ndjson` **追加一行**事件，每条记录 op/id/agent/时间/描述/重要性/影响量 delta。**只追加不覆盖**，历史永不丢失。
 
-`update` 记录旧/新重要性（注意力升降），`drop` 记下被挤掉/淘汰的那条（「注意力在舍弃什么」的关键信号）。
-
-用 `memo log --all` 从文件夹按编号顺序一览全部历史；扫 `history/` 文件夹本身也能一眼看到滚动轨迹，排查健忘/钻牛角尖。
+- **`delta`（重要性影响量）**= 本次操作对整个 memo 的影响：insert=+新importance、update=+新-旧importance、drop=-importance。「重大改变」= |delta| 大的那几次，用 `memo review` 直接找出来回顾分析。
+- **并发安全**：变更用独立哨兵文件锁 `.memo.lock`（独占创建 O_EXCL）串行化，多 Agent/多进程同时写也不冲突。锁是自建的虚拟文件锁，跨平台可靠。
+- **版本兼容**：老版本用 `history/` 目录存的 `.md` 历史仍被只读兼容，不自动迁移删除；新写入一律走 `history.ndjson`，编号从旧记录最大序号之后续。
+- **锁残留复原**：若某个进程崩溃留下 `.memo.lock`，后续写入会超时提示，手动删除该文件即可恢复（可逆）。
 
 ## 与其他文档的关系
 

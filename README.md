@@ -12,10 +12,10 @@
 ```
 memo-skill/
   SKILL.md            # 给 Agent 的完整规则（何时记、如何估值、如何消解冲突）
-  scripts/memo        # 单命令：insert / update / drop / view / playbook / tidy / daydream / watch
+  scripts/memo        # 单命令：insert / update / drop / view / playbook / review / tidy / daydream
   playbooks/          # 场景化种子备忘（issue-to-ship, need-to-design …）
   prompts/memo.md     # /memo 斜杠指令模板（拷到 ~/.pi/agent/prompts/ 启用）
-  memo/.gitkeep       # 运行时数据目录（index.json + 条目 .md + history/），不随仓库分发
+  memo/.gitkeep       # 运行时数据目录（index.json + 条目 .md + history.ndjson），不随仓库分发
 ```
 
 > `memo/` 里是各工作区自己的运行时数据，**不提交**（见 `.gitignore`）。仓库只装「机制」。
@@ -24,6 +24,8 @@ memo-skill/
 
 每条 memo 一个文件：`{NNN}-{描述}.md`（NNN 固定 3 位序号，描述 5~10 字）。
 重要性绝对值、agentID、时间戳等结构化字段都存索引 `memo/index.json`，**文件名只留人眼可读的序号+描述**。序号是每次 insert/update/drop 后由脚本重排重命名得到的派生值。
+
+滚动历史是 `memo/history.ndjson`（**只追加 append-only**，每行一条事件，永不覆盖）。每次操作还记 `delta`（对 memo 的重要性影响量：新重要性 / 升降差 / -重要性），用 `memo review` 可按影响量找出「什么造就了重大改变」。多进程并发写由哨兵锁 `.memo.lock` 串行化，跨平台可靠。
 
 ## 快速上手
 
@@ -36,24 +38,24 @@ scripts/memo update --id <id> --importance 0.75
 scripts/memo view --scope agent --top 10
 # 查看滚动日志（全部历史 / 被淘汰的记录）
 scripts/memo log --all
+# 回顾重大改变（按影响量 |delta| 找历史中的关键事件）
+scripts/memo review
 
 # 总结清理：聚类 + 归并/重排/清理候选（供 agent 判断后落地）
 scripts/memo tidy
-# 白日梦：从历史随手捞被遗忘的旧线索
+# 白日梦：从历史随机捞被遗忘的旧线索
 scripts/memo daydream
-# 业界对照：提炼当前关注主题，交联网 agent 查当前最佳实践
-scripts/memo watch
 ```
 
 命令详情见 `SKILL.md`。Agent 用起来只需传语义参数，重排、重命名、写索引全部由脚本自动完成。
 
-## 梳理类命令：tidy / daydream / watch
+## 梳理类命令：tidy / daydream / review
 
 三个命令都遵循「**脚本采集结构、agent(LLM)做判断**」：脚本不自动改数据，只输出结构化素材，agent 据此决定 insert / update / drop 落地。
 
 - **`tidy`** —— 总结清理。输出按来源归类、低重要性候选、疑似可归并项、最近 drop 的旧目标。归并=保留一个+其余 drop 带 note 合并；重排序/重命名由脚本自动完成。
-- **`daydream`〔白日梦〕** —— 从 history/ 随机捞被 drop 的旧线索（`--mix` 混入别的操作），对照当前仍在盯的 top3，当灵感/遗忘补给。
-- **`watch`〔上网/业界〕** —— 提炼当前关注主题（`--topic` 可显式指定），交给有联网能力的 agent 查当前业界最佳实践，把可复现做法记回 memo。不内置爬虫，保持纯 stdlib。
+- **`daydream`〔白日梦〕** —— 从历史随机捞被 drop 的旧线索（`--mix` 混入别的操作），对照当前仍在盯的 top3，当灵感/遗忘补给。
+- **`review`〔回顾〕** —— 按对 memo 的重要性影响量 |delta| 从大到小列出重大改变事件。写历史时自动记 delta（insert=+新重要性 / update=+升降差 / drop=-重要性），所以历史里能直接找出「触发重大改变的那几次操作」供回到分析。
 
 ## Playbook（场景化种子）与 `/memo`
 
