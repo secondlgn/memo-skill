@@ -12,7 +12,7 @@
 ```
 memo-skill/
   SKILL.md            # 给 Agent 的完整规则（何时记、如何估值、如何消解冲突）
-  scripts/memo        # 单命令：insert / update / drop / view / playbook / route
+  scripts/memo        # 单命令：insert / update / drop / view / playbook / tidy / daydream / watch
   playbooks/          # 场景化种子备忘（issue-to-ship, need-to-design …）
   prompts/memo.md     # /memo 斜杠指令模板（拷到 ~/.pi/agent/prompts/ 启用）
   memo/.gitkeep       # 运行时数据目录（index.json + 条目 .md + history/），不随仓库分发
@@ -36,9 +36,24 @@ scripts/memo update --id <id> --importance 0.75
 scripts/memo view --scope agent --top 10
 # 查看滚动日志（全部历史 / 被淘汰的记录）
 scripts/memo log --all
+
+# 总结清理：聚类 + 归并/重排/清理候选（供 agent 判断后落地）
+scripts/memo tidy
+# 白日梦：从历史随手捞被遗忘的旧线索
+scripts/memo daydream
+# 业界对照：提炼当前关注主题，交联网 agent 查当前最佳实践
+scripts/memo watch
 ```
 
 命令详情见 `SKILL.md`。Agent 用起来只需传语义参数，重排、重命名、写索引全部由脚本自动完成。
+
+## 梳理类命令：tidy / daydream / watch
+
+三个命令都遵循「**脚本采集结构、agent(LLM)做判断**」：脚本不自动改数据，只输出结构化素材，agent 据此决定 insert / update / drop 落地。
+
+- **`tidy`** —— 总结清理。输出按来源归类、低重要性候选、疑似可归并项、最近 drop 的旧目标。归并=保留一个+其余 drop 带 note 合并；重排序/重命名由脚本自动完成。
+- **`daydream`〔白日梦〕** —— 从 history/ 随机捞被 drop 的旧线索（`--mix` 混入别的操作），对照当前仍在盯的 top3，当灵感/遗忘补给。
+- **`watch`〔上网/业界〕** —— 提炼当前关注主题（`--topic` 可显式指定），交给有联网能力的 agent 查当前业界最佳实践，把可复现做法记回 memo。不内置爬虫，保持纯 stdlib。
 
 ## Playbook（场景化种子）与 `/memo`
 

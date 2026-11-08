@@ -47,6 +47,13 @@ scripts/memo view --scope workplace --all          # 全部
 # 查看滚动/审计日志（曾经有过的所有条目、改动、被淘汰的记录）
 scripts/memo log --all                             # 全部历史
 scripts/memo log --agent <id> --top 20             # 某 Agent 的历史
+
+# 总结清理：采集聚类 + 归并/重排/清理候选，供 agent 判断后落地
+scripts/memo tidy
+# 白日梦：从历史随手捞被遗忘/旧线索，当灵感与备忘补给
+scripts/memo daydream [--n 3] [--mix]
+# 业界对照：提炼当前关注主题，交有联网能力的 agent 去查当前最佳实践
+scripts/memo watch [--topic <X>] [--top 3]
 ```
 
 > 工作区默认取当前目录下的 `memo/`；可用环境变量 `MEMO_DIR` 指向任意工作区。
@@ -80,6 +87,16 @@ pi 里通过 `~/.pi/agent/prompts/memo.md` 提供 `/memo` 命令：输入后 LLM
 路由纪律：只路由一次；不匹配时**不硬塞**，提示提 issue；无法决定时占位初始化并在回复里注明。重试纪律：可逆操作大胆做；**同一操作重试 3 次仍失败即停止并通知用户**。
 
 > /memo 的具体实现是一个 pi prompt template，代码在 `prompts/memo.md`（仓库内一份，安装时可拷贝到 `~/.pi/agent/prompts/`）。
+
+## 梳理类命令：tidy / daydream / watch
+
+三兄弟都是「广播」而非「自动魔法」：**脚本负责机械采集汇聚，agent(LLM)基于脚本给出的结构化素材做语义判断，再调 insert/update/drop 落地。** 保持「脚本存取、agent 判断」哲学。
+
+- **`scripts/memo tidy`** —— 总结清理。脚本扫描 index+history，输出：①按来源/agent 聚类 ②低重要性清理候选 ③疑似重复/可归并(粗糙归一化匹配) ④最近 drop 的旧目标。**脚本不自己删**，只给候选；agent 决定每条 update 权重 / 归并 / drop。归并 = 挑一个保留、其余 drop、note 合并进保留项；重排由重要性自动驱动，无需额外命令。是滚动本本的「被挤掉的东西里，偶有值得重拾的」的补给。
+- **`scripts/memo daydream [--n N] [--mix]`** —— 白日梦。从 history/ 随机捞被 drop 的旧线索(默认纯 drop 池，`--mix` 混入 insert/update)，并列出现在仍盯的 top3 对照。脚本只随机捞；agent 觉得值得重拾就 insert 回当前本子，纯当灵感也可以只记一笔 `insert`。
+- **`scripts/memo watch [--topic X] [--top N]`** —— 业界对照。脚本提炼当前关注主题(默认取重要性最高几条的 desc/note，`--topic` 可显式覆盖)，**交给有联网能力的 agent** 据此查当前业界最佳实践。可复现做法/来源链接 `insert` 一条「外部最佳实践」，或与现有做法 `update` 对照。
+
+> `watch` 不内置爬虫（保持纯 stdlib 无第三方依赖）：联网查询由 agent 自己的 Web 工具完成，脚本只给 query 原料。
 
 ## 开场协议（每次会话必做，零成本注意力引导）
 

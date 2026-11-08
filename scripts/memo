@@ -297,6 +297,151 @@ def playbook_route(args):
 def to_me():
     return os.getenv("PI_AGENT_ID") or os.getenv("AGENT_ID") or "me"
 
+# ---------------- tidy / daydream / watch ----------------
+
+def read_all_history():
+    """读 history/ 全部记录(按序号升序,即时间先后), 返回 list of dict."""
+    out = []
+    if not os.path.isdir(HISTORY_DIR):
+        return out
+    for fn in sorted(os.listdir(HISTORY_DIR)):
+        if not fn.endswith(".md"):
+            continue
+        seq = fn.split("-", 1)[0]
+        if not seq.isdigit():
+            continue
+        body = ""
+        try:
+            with open(os.path.join(HISTORY_DIR, fn), encoding="utf-8-sig") as f:
+                body = f.read()
+        except Exception:
+            pass
+        # 从正文提取关键字段(容错: 文件可能旧格式/极简)
+        rec = {"file": fn, "seq": int(seq)}
+        for line in body.splitlines():
+            ls = line.strip()
+            if ls.startswith("- 时间"): rec["ts"] = ls.split(":", 1)[1].strip()
+            elif ls.startswith("- 操作"): rec["op"] = ls.split(":", 1)[1].strip()
+            elif ls.startswith("- Agent"): rec["agent"] = ls.split(":", 1)[1].strip()
+            elif ls.startswith("描述"): rec["desc"] = ls.split(":", 1)[1].strip()
+        rec.setdefault("op", "?"); rec.setdefault("desc", fn)
+        out.append(rec)
+    return out
+
+def tidy(args):
+    """总结清理: 采集聚类 + 去重构的合理建议, 不改数据.
+    输出供 agent 阅读并据此调 insert/update/drop 落地。
+    """
+    data = load()
+    notes = data["notes"]
+    hist = read_all_history()
+    print(f"=== memo tidy: 总结清理报告 (notes={len(notes)}, history={len(hist)}) ===")
+
+    # 1. 按 source 聚类(playbook 种子 vs 普通条目)
+    from collections import defaultdict
+    by_src = defaultdict(list)
+    for n in notes:
+        by_src[n.get("source") or n.get("agent") or "?"] .append(n)
+    print("\n[1] 按来源归类:")
+    for k, lst in sorted(by_src.items()):
+        imps = ", ".join(f"{n['desc']}({n.get('importance',0):.2f})" for n in lst)
+        print(f"  {k}: {len(lst)}条 | {imps}")
+
+    # 2. 低重要性条款 → 清理候选
+    print("\n[2] 低重要性(<=0.3) 清理候选:")
+    low = [n for n in notes if n.get("importance", 0) <= 0.3]
+    if low:
+        for n in low:
+            print(f"  drop? #{n['id']} [{n.get('importance',0):.2f}] {n['desc']}")
+    else:
+        print("  无")
+
+    # 3. 近似 desc → 可能可归并(粗糙去重: 归一化字符串后看重复)
+    print("\n[3] 疑似重复/可归并(按去空格后首8字匹配):")
+    def norm(s):
+        return "".join(ch for ch in s if not ch.isspace())[:8]
+    seen = {}
+    merged = []
+    for n in notes:
+        key = norm(n.get("desc", ""))
+        if not key: continue
+        if key in seen:
+            merged.append((seen[key], n))
+        else:
+            seen[key] = n
+    if merged:
+        for a, b in merged:
+            print(f"  ? {a['id']}:{a['desc']}  vs  {b['id']}:{b['desc']}")
+    else:
+        print("  无(粗糙匹配无命中, 更审计义重复由 agent 判断)")
+
+    # 4. 被遗忘的旧目标: 最近 history 里 drop 的、可能想重拾
+    print("\n[4] 最近 drop 过的(可当重拾候选/历史回顾):")
+    drops = [r for r in hist if r.get("op") == "drop"][-6:]
+    if drops:
+        for r in drops:
+            print(f"  曾drop(#{r['seq']}): {r['desc']}")
+    else:
+        print("  无")
+
+    print("\n[建议] 脚本已采集结构; 由 agent 判断哪些 update 权重/归并/drop, 再调对应命令落地。")
+
+def daydream(args):
+    """白日梦: 从历史里随机捞被遗忘/旧线索, 当作灵感与备忘补给。
+    不改数据, 只呈现。 agent 读到有感想的可经 insert 记回。
+    """
+    import random
+    hist = read_all_history()
+    data = load()
+    if not hist and not data["notes"]:
+        print("=== memo daydream: 暂无任何历史, 先去写点 memo 吧 ==="); return
+    n = max(1, args.n)
+    print(f"=== memo daydream: 随机回望 ({len(hist)} 条历史) ===")
+
+    # 从历史随机抽(偏向 drop, 因为那是'被遗忘'的集中地)
+    drops = [r for r in hist if r.get("op") == "drop"]
+    others = [r for r in hist if r.get("op") != "drop"]
+    pool = drops + others if args.mix else drops
+    if not pool:
+        pool = others
+    random.shuffle(pool)
+    print(f"\n[灵感抽屉] 随机抽 {min(n, len(pool))} 条旧痕迹:")
+    for r in pool[:n]:
+        print(f"  ({r['seq']}) [{r.get('op','?')}/{r.get('agent','?')}] {r.get('desc','')}")
+
+    # 顺便附上仍盯着的 top, 好对照'忘'与'记'
+    order = sorted(data["notes"], key=lambda x: -x.get("importance", 0))
+    print("\n[对照] 现在仍在盯的 top3:")
+    for x in order[:3]:
+        print(f"  [{x.get('importance',0):.2f}] {x.get('desc','')}")
+
+    print("\n[说明] 脚本只随机捞线索; 若某条值得重拾/成灵感, 由 agent 经 insert 记回当前本子。")
+
+def watch(args):
+    """上上网/业界对照: 脚本提炼当前关注主题, 交给有联网能力的 agent 去查当前最佳实践。
+    --topic 可显式指定; 否则用重要性最高的几条 desc/note 当主题来源。
+    """
+    data = load()
+    notes = data["notes"]
+    order = sorted(notes, key=lambda x: -x.get("importance", 0))
+    print("=== memo watch: 业界对照发现 (看大家/当前最佳实践) ===")
+
+    if args.topic:
+        topics = [args.topic]
+    else:
+        # 取 top 几条的关注点作主题原料
+        topics = []
+        for n in order[: args.top]:
+            topics.append(n.get("desc", ""))
+            if n.get("note"): topics.append(n["note"])
+    print("\n[我的关注主题] (供检索当前最佳实践):")
+    for t in topics:
+        print(f"  - {t}")
+    print("\n[动作] 脚本已给出主题; 请用带联网能力的工具(Web/搜索/browser)基于这些主题查当前业界最佳实践,")
+    print("       得到的可复现做法/来源链接记回 memo(insert 一条'外部最佳实践'), 或与现有做法对照后 update。")
+    print(f"       提新场景反馈: {GITHUB_REPO}")
+
+
 p = argparse.ArgumentParser(prog="memo")
 sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -345,6 +490,19 @@ ppb_init.set_defaults(pfn=playbook_init)
 ppb_route = ppb_sub.add_parser("route")
 ppb_route.add_argument("--query", default=None)
 ppb_route.set_defaults(pfn=playbook_route)
+
+ptd = sub.add_parser("tidy")
+ptd.set_defaults(fn=tidy)
+
+pdd = sub.add_parser("daydream")
+pdd.add_argument("--n", type=int, default=3)
+pdd.add_argument("--mix", action="store_true", help="不只抽 drop, 混入 insert/update")
+pdd.set_defaults(fn=daydream)
+
+pw = sub.add_parser("watch")
+pw.add_argument("--topic", default=None)
+pw.add_argument("--top", type=int, default=3)
+pw.set_defaults(fn=watch)
 
 a = p.parse_args()
 if hasattr(a, "pfn"):
