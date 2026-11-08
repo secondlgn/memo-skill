@@ -6,9 +6,9 @@ argument-hint: "[场景意图描述]"
 
 ## 步骤
 
-1. 先看可用 playbook：
+1. 先看可用 playbook（在 memo-skill 仓库根目录执行）：
    ```
-   memo playbook list
+   scripts/memo playbook list
    ```
 
 2. 读当前对话上下文，判断任务的「场景类型」——参考两个已装场景：
@@ -20,11 +20,11 @@ argument-hint: "[场景意图描述]"
 
 4. 初始化该场景的种子备忘（灌入当前工作区滚动本本）：
    ```
-   memo playbook init --name <slug>
+   scripts/memo playbook init --name <slug>
    ```
    重复调用不会重复灌入（同 desc 自动跳过）。
 
-5. `memo view` 展示初始化的滚动本本。
+5. `scripts/memo view` 展示初始化的滚动本本。
 
 ## 路由纪律
 
@@ -32,7 +32,7 @@ argument-hint: "[场景意图描述]"
 - 若任务的意图与任何已装 playbook 都不匹配，**不要硬塞**。告诉用户没有匹配场景，
   并提示可以到 memo-skill 的 GitHub 仓库提 issue 贡献新 playbook：
   ```
-  memo playbook route --query "<你的意图>"
+  scripts/memo playbook route --query "<你的意图>"
   ```
   该命令会打印提 issue 的入口。建议标题：`new playbook: <意图>`。
 
