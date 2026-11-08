@@ -30,7 +30,7 @@ MEMO_DIR = os.getenv("MEMO_DIR", os.path.abspath("memo"))
 INDEX = os.path.join(MEMO_DIR, "index.json")
 HISTORY_DIR = os.path.join(MEMO_DIR, "history")
 PLAYBOOK_DIR = os.getenv("PLAYBOOK_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "../playbooks"))
-GITHUB_REPO = os.getenv("MEMO_GITHUB_REPO", "https://github.com/YOURUSER/memo-skill/issues/new")
+GITHUB_REPO = os.getenv("MEMO_GITHUB_REPO", "https://github.com/secondlgn/memo-skill/issues/new")
 
 _hseq = [0]
 def _next_seq():

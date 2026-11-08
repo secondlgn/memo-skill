@@ -64,4 +64,4 @@ scripts/memo playbook init --name issue-to-ship
 
 - 纯 Python 标准库，无第三方依赖。
 - 可用 `MEMO_DIR` 环境变量指定任意工作区数据目录。
-- `GITHUB_REPO` 环境变量可覆盖提 issue 的仓库地址（默认占位符）。
+- `MEMO_GITHUB_REPO` 环境变量可覆盖提 issue 的仓库地址（默认指向 `secondlgn/memo-skill`）。
