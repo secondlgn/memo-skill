@@ -52,6 +52,35 @@ scripts/memo log --agent <id> --top 20             # 某 Agent 的历史
 > 工作区默认取当前目录下的 `memo/`；可用环境变量 `MEMO_DIR` 指向任意工作区。
 > Agent 来源 `--agent` 取自己的标识（如环境变量里的 agent id）。
 
+## Playbook：场景化种子备忘
+
+`playbooks/` 目录为常见任务场景预置了一套「种子备忘」（完成标准、纪律、核查清单）。选定一个场景时，把它的种子批量灌入当前工作区 memo，作为该任务的注意力基线。播放本是**一次性注入**，之后照常走 insert/update/drop。
+
+```
+scripts/memo playbook list                      # 列出已装场景
+scripts/memo playbook init --name <slug> [--dry-run]   # 预览/灌入某场景（重复调用自动去重）
+scripts/memo playbook route --query "<意图>"     # 未匹配时展示候选 + 提 issue 入口
+```
+
+已预置场景：
+
+| slug | 场景 | 一句话 |
+|---|---|---|
+| `issue-to-ship` | Issue → 开发·测试·交付 | 一个 issue 交付成可验证改动 |
+| `need-to-design` | 需求 → 可靠设计 | 零散需求收敛成可靠设计决策 |
+
+**铺新场景**：在 `playbooks/<slug>.json` 里按两个例子写 `seeds`（每个含 desc/importance/note），脚本即可 `playbook init --name <slug>`。
+
+**找不到匹配场景**：不要硬塞。引导用户到本仓库提 GitHub issue（建议标题 `new playbook: <意图>`），详见 `/memo` 斜杠指令的「路由纪律」。
+
+## /memo 斜杠指令（自动路由）
+
+pi 里通过 `~/.pi/agent/prompts/memo.md` 提供 `/memo` 命令：输入后 LLM 读当前对话上下午，把任务**语义路由到最匹配的 playbook** 并初始化。不发散时它连参数都不吃：`/memo` 或 `/memo source: issue #42`。
+
+路由纪律：只路由一次；不匹配时**不硬塞**，提示提 issue；无法决定时占位初始化并在回复里注明。重试纪律：可逆操作大胆做；**同一操作重试 3 次仍失败即停止并通知用户**。
+
+> /memo 的具体实现是一个 pi prompt template，代码在 `prompts/memo.md`（仓库内一份，安装时可拷贝到 `~/.pi/agent/prompts/`）。
+
 ## 开场协议（每次会话必做，零成本注意力引导）
 
 **每次会话开始，先跑两下（脚本自动、输出恒定一小屏，不用我每次现场编排）：**

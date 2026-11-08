@@ -1,0 +1,38 @@
+{
+  "slug": "need-to-design",
+  "name": "零散需求 → 可靠用户设计",
+  "distill": "把零散的用户需求收敛为可靠的设计决策：先定最小粒度单元，澄清问题，用匹配的响应格式固化决策，小样验证再铺开。",
+  "github_issue_slug": "need-vs-design",
+  "seeds": [
+    {
+      "kind": "playbook",
+      "importance": 0.9,
+      "desc": "先定最小单元",
+      "note": "设计的第一件事：'一个用户一次看一个单元'是什么（unit）。取最小但仍承载判断的粒度。"
+    },
+    {
+      "kind": "playbook",
+      "importance": 0.85,
+      "desc": "澄清问题不臆测",
+      "note": "上下文不确定时去问，不让 model 脑补。用户没说清的地方标为待澄清。"
+    },
+    {
+      "kind": "playbook",
+      "importance": 0.85,
+      "desc": "响应格式即决策",
+      "note": "明确是 yes/no、单选、排序还是自由文本。能用列表就别开放输入，能单选就别多选。"
+    },
+    {
+      "kind": "playbook",
+      "importance": 0.8,
+      "desc": "冲突标签不并存",
+      "note": "两个标签不能同时为真就剪掉一个；永远补'无/不清楚'。别硬凹固定标签，必要时开放编码(QDA)。"
+    },
+    {
+      "kind": "playbook",
+      "importance": 0.75,
+      "desc": "小样验证再铺开",
+      "note": "先小样(3人/50-100项)看分歧再全量铺开。重大分歧先回来改设计，重试超 3 次通知用户。"
+    }
+  ]
+}

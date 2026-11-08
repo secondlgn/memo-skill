@@ -1,0 +1,38 @@
+{
+  "slug": "issue-to-ship",
+  "name": "Issue → 开发·测试·交付",
+  "distill": "把一个 issue 从想法交付成可验证的改动：先定可验证目标，再实现、测试、自查，最后交付，不留半成品。",
+  "github_issue_slug": "issue-vs-delivery",
+  "seeds": [
+    {
+      "kind": "playbook",
+      "importance": 0.9,
+      "desc": "目标=一次可验证的issue",
+      "note": "把 issue 拆成一个可验证的 goal 再动手。任何产出都能用一条明确判据检查。"
+    },
+    {
+      "kind": "playbook",
+      "importance": 0.85,
+      "desc": "测试先于或伴随实现",
+      "note": "交付前跑通测试套件。测试与实现一起演进，不留'回头再补'。"
+    },
+    {
+      "kind": "playbook",
+      "importance": 0.85,
+      "desc": "语义化提交可回滚",
+      "note": "每个 commit 独立、语义清晰、可单独回滚。改动可逆时放心大胆做。"
+    },
+    {
+      "kind": "playbook",
+      "importance": 0.8,
+      "desc": "自查审查lens",
+      "note": "交付前自查边界与验证缺口，拒绝制造真 bug。不堆无关发现，defer 即可。"
+    },
+    {
+      "kind": "playbook",
+      "importance": 0.75,
+      "desc": "死路记面包屑不空转",
+      "note": "修不动就记面包屑（死路/岔口），不原地空转。重试超 3 次必须通知用户。"
+    }
+  ]
+}

@@ -29,6 +29,8 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)) + "/..")
 MEMO_DIR = os.getenv("MEMO_DIR", os.path.abspath("memo"))
 INDEX = os.path.join(MEMO_DIR, "index.json")
 HISTORY_DIR = os.path.join(MEMO_DIR, "history")
+PLAYBOOK_DIR = os.getenv("PLAYBOOK_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "../playbooks"))
+GITHUB_REPO = os.getenv("MEMO_GITHUB_REPO", "https://github.com/YOURUSER/memo-skill/issues/new")
 
 _hseq = [0]
 def _next_seq():
@@ -100,8 +102,12 @@ def renum(data):
         if oldf and os.path.exists(oldf) and oldf != nfpath:
             os.rename(oldf, nfpath)
             renamed.append((os.path.basename(oldf), nf))
-        else:
-            open(nfpath, "w", encoding="utf-8").write("")
+        elif not os.path.exists(nfpath):
+            # 新文件: 文件名=概述(desc), 正文=一段详情(note)
+            body = n.get("note", "") or ""
+            if body.strip() == "" and n.get("desc"):
+                body = n["desc"]
+            open(nfpath, "w", encoding="utf-8").write(body)
         n["_file"] = nf
         n["seq"] = newseq
     save(data)
@@ -211,6 +217,83 @@ def mlog(args):
         mark = {"insert":"+","update":"~","drop":"-"}.get(op,"=")
         print(f"{seq}: {mark} [{op}] {desc}")
 
+def playbooks_dir():
+    return os.path.normpath(PLAYBOOK_DIR)
+
+def list_playbooks():
+    """列出可用场景(playbook)."""
+    d = playbooks_dir()
+    out = []
+    if not os.path.isdir(d):
+        return out
+    for fn in sorted(os.listdir(d)):
+        if fn.endswith(".json"):
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8") as f:
+                    out.append(json.load(f))
+            except Exception:
+                pass
+    return out
+
+def load_playbook(slug):
+    for pb in list_playbooks():
+        if pb.get("slug") == slug:
+            return pb
+    return None
+
+def playbook_list(args):
+    pbs = list_playbooks()
+    if not pbs:
+        print("=== memo playbook: 暂无可用场景 ==="); return
+    print(f"=== memo playbook ({len(pbs)}) ===")
+    for pb in pbs:
+        print(f"  {pb['slug']:20s} {pb['name']}")
+        print(f"     {pb.get('distill','')}")
+    print(f"\n提新场景: {GITHUB_REPO}")
+
+def playbook_init(args):
+    pb = load_playbook(args.name)
+    if not pb:
+        print(f"场景不存在: {args.name}"); print(f"可用: {[x['slug'] for x in list_playbooks()]}")
+        sys.exit(1)
+    if args.dry_run:
+        print(f"=== 预览: 场景 {args.name} 将灌入 {len(pb['seeds'])} 条 ===")
+        for s in pb["seeds"]:
+            print(f"  [{s['importance']:.2f}] {s['desc']}")
+        print("   (--dry-run 不写入; 删去该参数即应用)")
+        return
+    data = load()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    added = 0
+    for i, s in enumerate(pb["seeds"]):
+        new_id = f"pb-{pb['slug']}-{i}"
+        if any(n.get("desc") == s["desc"] for n in data["notes"]):
+            print(f"  skip(已存在): {s['desc']}")
+            continue
+        entry = {
+            "id": new_id, "desc": s["desc"], "importance": s.get("importance", 0.8),
+            "agent": args.agent or "memo", "created": now, "updated": now,
+            "note": s.get("note", ""), "_file": "", "seq": len(data["notes"])+1,
+            "source": pb["slug"]
+        }
+        data["notes"].append(entry)
+        added += 1
+    order, renamed = renum(data)
+    save(data)
+    print(f"=== 场景 {args.name} 已灌入 memo({added} 条新种子) ===")
+    for a, b in renamed:
+        print(f"  renamed {a} -> {b}")
+
+def playbook_route(args):
+    query = args.query or ""
+    pbs = list_playbooks()
+    print("=== 可匹配的 memo playbook ===")
+    for pb in pbs:
+        print(f"  {pb['slug']:20s} {pb['name']}")
+    print(f"\n输入意图(未匹配到合适场景时, 可提 GitHub issue):")
+    print(f"  {GITHUB_REPO}")
+    print(f"  title 建议: `new playbook: {query or '<你的场景>'}`")
+
 def to_me():
     return os.getenv("PI_AGENT_ID") or os.getenv("AGENT_ID") or "me"
 
@@ -250,5 +333,21 @@ pl.add_argument("--top", type=int, default=30)
 pl.add_argument("--all", action="store_true")
 pl.set_defaults(fn=mlog)
 
+ppb = sub.add_parser("playbook")
+ppb_sub = ppb.add_subparsers(dest="pcmd")
+ppb_list = ppb_sub.add_parser("list")
+ppb_list.set_defaults(pfn=playbook_list)
+ppb_init = ppb_sub.add_parser("init")
+ppb_init.add_argument("--name", required=True)
+ppb_init.add_argument("--dry-run", action="store_true")
+ppb_init.add_argument("--agent", default=None)
+ppb_init.set_defaults(pfn=playbook_init)
+ppb_route = ppb_sub.add_parser("route")
+ppb_route.add_argument("--query", default=None)
+ppb_route.set_defaults(pfn=playbook_route)
+
 a = p.parse_args()
-a.fn(a)
+if hasattr(a, "pfn"):
+    a.pfn(a)
+else:
+    a.fn(a)

@@ -12,7 +12,9 @@
 ```
 memo-skill/
   SKILL.md            # 给 Agent 的完整规则（何时记、如何估值、如何消解冲突）
-  scripts/memo        # 单命令：insert / update / drop / view
+  scripts/memo        # 单命令：insert / update / drop / view / playbook / route
+  playbooks/          # 场景化种子备忘（issue-to-ship, need-to-design …）
+  prompts/memo.md     # /memo 斜杠指令模板（拷到 ~/.pi/agent/prompts/ 启用）
   memo/.gitkeep       # 运行时数据目录（index.json + 条目 .md + history/），不随仓库分发
 ```
 
@@ -38,7 +40,28 @@ scripts/memo log --all
 
 命令详情见 `SKILL.md`。Agent 用起来只需传语义参数，重排、重命名、写索引全部由脚本自动完成。
 
+## Playbook（场景化种子）与 `/memo`
+
+选定一个任务场景时，把它的种子备忘批量灌入当前工作区（`--dry-run` 先预览）：
+
+```
+scripts/memo playbook list
+scripts/memo playbook init --name issue-to-ship --dry-run
+scripts/memo playbook init --name issue-to-ship
+```
+
+`/memo` 斜杠指令（需拷 `prompts/memo.md` 到 `~/.pi/agent/prompts/`）让 LLM 读对话上下文、**自动路由到最匹配的 playbook** 并初始化。
+
+- 输入零参数调用：`/memo`；或带意图线索：`/memo issue #42`。
+- 不匹配时不会硬塞：引导你到 GitHub 提 issue（`memo playbook route` 打印入口）。
+- 可逆操作大胆做；同一操作重试 **3 次仍失败即通知你**。
+
+### 提新场景
+
+在 `playbooks/<slug>.json` 加一个 `seeds` 列表即可被 `playbook list/init` 识别。也欢迎到仓库提 issue（`new playbook: <意图>`）。
+
 ## license / 依赖
 
 - 纯 Python 标准库，无第三方依赖。
 - 可用 `MEMO_DIR` 环境变量指定任意工作区数据目录。
+- `GITHUB_REPO` 环境变量可覆盖提 issue 的仓库地址（默认占位符）。
