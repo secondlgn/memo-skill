@@ -90,8 +90,10 @@ scripts/memo playbook route --query "<意图>"     # 未匹配时展示候选 + 
 |---|---|---|
 | `issue-to-ship` | Issue → 开发·测试·交付 | 一个 issue 交付成可验证改动 |
 | `need-to-design` | 需求 → 可靠设计 | 零散需求收敛成可靠设计决策 |
+| `report-to-deliver` | 汇报 → 定稿·交付 | 汇报从素材推进到确认稿 |
+| `content-to-deck` | 内容写作 → 演示交付 | 观点写成能讲能看的稿与页 |
 
-**铺新场景**：在 `playbooks/<slug>.json` 里按两个例子写 `seeds`（每个含 desc/importance/note），脚本即可 `playbook init --name <slug>`。
+**铺新场景**：在 `playbooks/<slug>.json` 里按现有例子写 `seeds`（每个含 desc/importance/note），脚本即可 `playbook init --name <slug>`。
 
 **找不到匹配场景**：不要硬塞。引导用户到本仓库提 GitHub issue（建议标题 `new playbook: <意图>`），详见 `/memo` 斜杠指令的「路由纪律」。
 
