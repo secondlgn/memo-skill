@@ -87,6 +87,8 @@ scripts/memo playbook init --name issue-to-ship
 
 用的时候发现命令别扭、报错、哪个场景想复用却没 playbook，都欢迎到仓库提 GitHub issue——`https://github.com/secondlgn/memo-skill/issues`。一次一条，写明在哪个命令/场景、预期与实际的差别即可。所有人的反馈汇聚成改进议题，skill 据此演化，成为更多 AI 愿意用的理由。（脚本零改动：反馈是对 Agent 的用法约定，不是后台自动上传。）
 
+> ⚠️ **隐私**：memo 内容跟着私有工作目录走。反馈时**不要附带工作区正文/真实路径/敏感命名**，把具体名词抽象化，只提供能复现问题的必要信息。
+
 ## license / 依赖
 
 - 纯 Python 标准库，无第三方依赖。
