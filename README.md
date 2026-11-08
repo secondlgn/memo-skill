@@ -15,7 +15,7 @@
 memo-skill/
   SKILL.md            # 给 Agent 的完整规则（何时记、如何估值、如何消解冲突）
   scripts/memo        # 单命令：insert / update / drop / view / playbook / review / tidy / daydream
-  playbooks/          # 场景化种子备忘（issue-to-ship, need-to-design …）
+  playbooks/          # 场景化种子备忘（issue-to-ship, need-to-design, report-to-deliver, content-to-deck …）
   prompts/memo.md     # /memo 斜杠指令模板（拷到 ~/.pi/agent/prompts/ 启用）
   memo/.gitkeep       # 运行时数据目录（index.json + 条目 .md + history.ndjson），不随仓库分发
 ```
