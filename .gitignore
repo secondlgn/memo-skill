@@ -2,6 +2,8 @@
 memo/index.json
 memo/*.md
 memo/history/
+memo/history.ndjson
+memo/.memo.lock
 !memo/.gitkeep
 __pycache__/
 *.pyc
