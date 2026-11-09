@@ -79,8 +79,7 @@ def file_lock(path, timeout=10):
 def memo_lock(timeout=10):
     return file_lock(LOCK_FILE, timeout)
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)) + "/..")
-MEMO_DIR = os.getenv("MEMO_DIR", os.path.abspath("memo"))
+MEMO_DIR = os.path.abspath(os.getenv("MEMO_DIR") or os.path.join(os.getcwd(), "memo"))
 INDEX = os.path.join(MEMO_DIR, "index.json")
 HISTORY_NDJSON = os.path.join(MEMO_DIR, "history.ndjson")
 HISTORY_DIR = os.path.join(MEMO_DIR, "history")  # 旧 .md 版本, 兼容只读

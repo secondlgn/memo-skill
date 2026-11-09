@@ -90,6 +90,8 @@ scripts/memo playbook route --query "<意图>"     # 未匹配时展示候选 + 
 |---|---|---|
 | `issue-to-ship` | Issue → 开发·测试·交付 | 一个 issue 交付成可验证改动 |
 | `need-to-design` | 需求 → 可靠设计 | 零散需求收敛成可靠设计决策 |
+| `report-to-deliver` | 汇报 → 定稿·交付 | 汇报从素材交付成确认稿（层级先行、分块确认、两稿逼近） |
+| `long-haul-project` | 长程自主项目 → 持续推进 | 单 agent 长程推进（最小闭环、近似标价、纪律可执行） |
 
 **铺新场景**：在 `playbooks/<slug>.json` 里按两个例子写 `seeds`（每个含 desc/importance/note），脚本即可 `playbook init --name <slug>`。
 
